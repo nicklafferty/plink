@@ -56,6 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
 
+        dropController.chooseDestinationHandler = { [weak self] in
+            self?.chooseDestination()
+        }
+
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
 
@@ -158,6 +162,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.dropController.convert(panel.urls)
         }
     }
+
+    private func chooseDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Use Folder"
+        panel.message = "Choose where converted JPGs are saved"
+        panel.directoryURL = Destination.folder
+
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            Destination.set(url)
+            self?.dropController.destinationChanged()
+        }
+    }
 }
 
 private func menuBarImage() -> NSImage? {
@@ -238,6 +260,7 @@ private func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
 final class DropViewController: NSViewController {
     var chooseFilesHandler: (() -> Void)?
     var quitHandler: (() -> Void)?
+    var chooseDestinationHandler: (() -> Void)?
 
     private let dropView = DropView()
     private let converter = HEICConverter()
@@ -280,6 +303,15 @@ final class DropViewController: NSViewController {
         dropView.onQuit = { [weak self] in
             self?.quitHandler?()
         }
+
+        dropView.onChooseDestination = { [weak self] in
+            self?.chooseDestinationHandler?()
+        }
+    }
+
+    /// Called after the user picks a new destination folder.
+    func destinationChanged() {
+        dropView.updateDestination()
     }
 
     func convert(_ urls: [URL]) {
@@ -437,11 +469,17 @@ final class DropView: NSView {
     var onChooseFiles: (() -> Void)?
     var onReveal: (() -> Void)?
     var onQuit: (() -> Void)?
+    var onChooseDestination: (() -> Void)?
 
     // Header
     private let titleLabel = NSTextField(labelWithString: "Plink")
     private let headerSpinner = NSProgressIndicator()
+    private let destinationButton = GhostIconButton()
     private let quitButton = GhostIconButton()
+
+    // True while the footer is showing the "Saves to …" destination text
+    // (i.e. not a done/error message), so we know when to refresh it live.
+    private var footerShowsDestination = true
 
     // Body
     private let dropZone = DropZoneView()
@@ -509,6 +547,10 @@ final class DropView: NSView {
         quitButton.toolTip = "Quit Plink"
         quitButton.onClick = { [weak self] in self?.onQuit?() }
 
+        destinationButton.configure(symbol: "folder", point: 12, color: .mnWhite(0.45))
+        destinationButton.toolTip = "Change where JPGs are saved"
+        destinationButton.onClick = { [weak self] in self?.onChooseDestination?() }
+
         let titleRow = NSStackView(views: [chip, titleLabel])
         titleRow.spacing = 9
         titleRow.alignment = .centerY
@@ -518,6 +560,7 @@ final class DropView: NSView {
         header.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(titleRow)
         header.addSubview(headerSpinner)
+        header.addSubview(destinationButton)
         header.addSubview(quitButton)
         let divider1 = hairline()
 
@@ -625,6 +668,10 @@ final class DropView: NSView {
             quitButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             quitButton.widthAnchor.constraint(equalToConstant: 26),
             quitButton.heightAnchor.constraint(equalToConstant: 26),
+            destinationButton.trailingAnchor.constraint(equalTo: quitButton.leadingAnchor, constant: -2),
+            destinationButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            destinationButton.widthAnchor.constraint(equalToConstant: 26),
+            destinationButton.heightAnchor.constraint(equalToConstant: 26),
             headerSpinner.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
             headerSpinner.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
@@ -665,9 +712,12 @@ final class DropView: NSView {
 
     func setConverting(completed: Int, total: Int, currentFile: String?) {
         revealButton.isEnabled = false
+        footerShowsDestination = true
         showConvertingBody(true)
         headerSpinner.isHidden = false
         headerSpinner.startAnimation(nil)
+        quitButton.isHidden = true
+        destinationButton.isHidden = true
         convTitle.stringValue = "Converting…"
         convCount.stringValue = "\(completed) of \(total)"
         convBar.fraction = total > 0 ? CGFloat(completed) / CGFloat(total) : 0
@@ -682,6 +732,7 @@ final class DropView: NSView {
         zoneIcon.contentTintColor = .mnGreen
         zoneTitle.stringValue = title
         zoneSub.stringValue = detail
+        footerShowsDestination = false
         footerLabel.stringValue = "Ready for the next batch"
         revealButton.isEnabled = true
     }
@@ -694,6 +745,7 @@ final class DropView: NSView {
         zoneIcon.contentTintColor = .mnRed
         zoneTitle.stringValue = title
         zoneSub.stringValue = detail
+        footerShowsDestination = false
         footerLabel.stringValue = "Try another file"
         revealButton.isEnabled = false
     }
@@ -714,7 +766,15 @@ final class DropView: NSView {
         zoneIcon.contentTintColor = .mnWhite(0.45)
         zoneTitle.stringValue = "Drop HEIC files"
         zoneSub.stringValue = "or click to choose"
-        footerLabel.stringValue = "Saves to your Desktop"
+        footerShowsDestination = true
+        footerLabel.stringValue = Destination.savesToText
+    }
+
+    /// Refresh the footer's destination text after the user picks a new folder.
+    func updateDestination() {
+        if footerShowsDestination {
+            footerLabel.stringValue = Destination.savesToText
+        }
     }
 
     private func applyDrag(fileCount: Int) {
@@ -734,6 +794,8 @@ final class DropView: NSView {
     private func stopSpinner() {
         headerSpinner.stopAnimation(nil)
         headerSpinner.isHidden = true
+        quitButton.isHidden = false
+        destinationButton.isHidden = false
     }
 
     @objc private func zoneClicked() { onChooseFiles?() }
@@ -780,28 +842,38 @@ final class DropView: NSView {
 
 // MARK: - Ghost icon button (header X)
 
-final class GhostIconButton: NSButton {
+final class GhostIconButton: NSView {
     var onClick: (() -> Void)?
-    private var iconColor: NSColor = .white
+    private let iconView = NSImageView()
 
     override init(frame frameRect: NSRect) { super.init(frame: frameRect); common() }
     required init?(coder: NSCoder) { super.init(coder: coder); common() }
 
     private func common() {
-        isBordered = false
-        bezelStyle = .regularSquare
-        imagePosition = .imageOnly
+        translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = 6
-        target = self
-        action = #selector(fire)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.imageScaling = .scaleNone
+        addSubview(iconView)
+        NSLayoutConstraint.activate([
+            iconView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
     }
 
     func configure(symbol: String, point: CGFloat, color: NSColor) {
-        iconColor = color
         let cfg = NSImage.SymbolConfiguration(pointSize: point, weight: .semibold)
-        image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol)?.withSymbolConfiguration(cfg)
-        contentTintColor = color
+        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol)?.withSymbolConfiguration(cfg)
+        img?.isTemplate = true
+        iconView.image = img
+        iconView.contentTintColor = color
+    }
+
+    // Whole control area is the click target (so the inner image view never
+    // swallows the click).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(convert(point, from: superview)) ? self : nil
     }
 
     override func updateTrackingAreas() {
@@ -811,8 +883,11 @@ final class GhostIconButton: NSButton {
     }
     override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = NSColor.mnWhite(0.08).cgColor }
     override func mouseExited(with event: NSEvent) { layer?.backgroundColor = NSColor.clear.cgColor }
-
-    @objc private func fire() { onClick?() }
+    override func mouseDown(with event: NSEvent) { /* retain event to receive mouseUp */ }
+    override func mouseUp(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.clear.cgColor
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
 }
 
 // MARK: - Text link button (footer "Reveal" / "Try again")
@@ -851,6 +926,42 @@ final class TextLinkButton: NSButton {
     }
 
     @objc private func fire() { if isEnabled { onClick?() } }
+}
+
+/// Where converted JPGs are saved. Persists across launches (and is shared with
+/// the `--convert` CLI / Finder Quick Action, since they read the same defaults).
+enum Destination {
+    private static let defaultsKey = "PlinkDestinationPath"
+
+    static var desktop: URL {
+        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    /// The chosen folder, falling back to the Desktop if unset or missing.
+    static var folder: URL {
+        if let path = UserDefaults.standard.string(forKey: defaultsKey), !path.isEmpty {
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                return url
+            }
+        }
+        return desktop
+    }
+
+    static func set(_ url: URL) {
+        UserDefaults.standard.set(url.path, forKey: defaultsKey)
+    }
+
+    static var isDesktop: Bool {
+        folder.standardizedFileURL == desktop.standardizedFileURL
+    }
+
+    /// Footer phrasing: "Saves to your Desktop" or "Saves to <Folder>".
+    static var savesToText: String {
+        isDesktop ? "Saves to your Desktop" : "Saves to \(folder.lastPathComponent)"
+    }
 }
 
 struct ConversionResult {
@@ -935,7 +1046,7 @@ final class HEICConverter {
     }
 
     private func outputURL(for inputURL: URL) throws -> URL {
-        let folder = desktopDirectory() ?? inputURL.deletingLastPathComponent()
+        let folder = Destination.folder
         let baseName = inputURL.deletingPathExtension().lastPathComponent
         var candidate = folder.appendingPathComponent("\(baseName).jpg")
         var suffix = 2
@@ -946,10 +1057,6 @@ final class HEICConverter {
         }
 
         return candidate
-    }
-
-    private func desktopDirectory() -> URL? {
-        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
     }
 }
 
