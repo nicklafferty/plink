@@ -73,6 +73,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
             button.toolTip = "Plink"
         }
+
+        // Surface the popover on first launch so the menu bar icon is easy to find.
+        if !UserDefaults.standard.bool(forKey: "PlinkDidIntro") {
+            UserDefaults.standard.set(true, forKey: "PlinkDidIntro")
+            DispatchQueue.main.async { [weak self] in self?.showPopover() }
+        }
+    }
+
+    // Re-opening the app (e.g. double-clicking it again) reveals the popover,
+    // since a menu-bar-only app has no window to bring forward.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showPopover()
+        return true
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -125,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showPopover() {
         guard let button = statusItem?.button else { return }
+        NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
@@ -147,10 +161,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private func menuBarImage() -> NSImage? {
-    let side: CGFloat = 18  // 18×18pt is the sweet spot for a status item
+    dropletImage(side: 18)  // 18×18pt is the sweet spot for a status item
+}
 
+/// The "Sheen" droplet, drawn as a vector at any size and returned as a template
+/// image (so it tints automatically). Shared by the menu bar and the in-app header.
+func dropletImage(side: CGFloat) -> NSImage {
     let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
-        // Coordinates are authored on an 18-unit grid, y-down (flipped: true).
+        // Path authored on an 18-unit grid (y-down); scale to the requested side.
+        let transform = NSAffineTransform()
+        transform.scale(by: side / 18.0)
+        transform.concat()
+
         let p = NSBezierPath()
         p.windingRule = .evenOdd
 
@@ -468,7 +490,7 @@ final class DropView: NSView {
         chip.layer?.backgroundColor = NSColor.mnWhite(0.10).cgColor
         chip.translatesAutoresizingMaskIntoConstraints = false
         let chipIcon = NSImageView()
-        chipIcon.image = symbol("photo.fill", point: 12, weight: .semibold)
+        chipIcon.image = dropletImage(side: 13)
         chipIcon.contentTintColor = .white
         chipIcon.translatesAutoresizingMaskIntoConstraints = false
         chip.addSubview(chipIcon)
