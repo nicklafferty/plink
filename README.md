@@ -49,12 +49,15 @@ Click the droplet in the menu bar, then drop `.heic` or `.heif` files onto the p
 
 You can also right-click HEIC files in Finder and choose **Quick Actions → Convert HEIC to JPG**.
 
-## A note on Gatekeeper
+## Installing a release
 
-Plink is **ad-hoc code-signed**, not notarized with an Apple Developer account. Building from source (above) runs locally with no warnings. If you instead download a prebuilt `Plink.zip` from [Releases](../../releases), macOS will flag it as from an unidentified developer. To open it:
+Prebuilt `Plink.zip` downloads from [Releases](../../releases) are **Developer ID
+signed and notarized by Apple**, so they open with a normal double-click — just
+unzip and drag `Plink.app` to `/Applications`.
 
-- Right-click `Plink.app` → **Open** → **Open**, or
-- Strip the quarantine flag: `xattr -dr com.apple.quarantine /Applications/Plink.app`
+Builds you make yourself with `./build.sh` are ad-hoc signed (no warning when run
+locally). See [RELEASING.md](RELEASING.md) for how signed/notarized releases are
+produced.
 
 ## Uninstall
 

@@ -41,6 +41,15 @@ if [[ -f "$ICON_SRC" ]]; then
   rm -rf "$(dirname "$ICONSET")"
 fi
 
-codesign --force --sign - "$APP_DIR" >/dev/null
-
-echo "Built $APP_DIR"
+# Sign. With SIGN_IDENTITY set (a "Developer ID Application: …" identity) we sign
+# with the hardened runtime + secure timestamp so the app can be notarized.
+# Without it, fall back to ad-hoc signing for local development.
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+  codesign --force --options runtime --timestamp \
+    --sign "$SIGN_IDENTITY" "$APP_DIR"
+  codesign --verify --strict --verbose=1 "$APP_DIR"
+  echo "Built $APP_DIR (signed: $SIGN_IDENTITY)"
+else
+  codesign --force --sign - "$APP_DIR" >/dev/null
+  echo "Built $APP_DIR (ad-hoc; set SIGN_IDENTITY to sign with Developer ID)"
+fi
