@@ -42,6 +42,7 @@ enum CommandLineRunner {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
+    private var statusView: StatusItemDropView?
     private let popover = NSPopover()
     private let dropController = DropViewController()
 
@@ -68,21 +69,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 360, height: 300)
         popover.contentViewController = dropController
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: 28)
 
-        if let button = statusItem?.button {
-            button.image = menuBarImage()
-            button.image?.isTemplate = true
-            button.action = #selector(togglePopover(_:))
-            button.target = self
-            button.toolTip = "Plink"
+        let statusView = StatusItemDropView(frame: NSRect(
+            x: 0,
+            y: 0,
+            width: 28,
+            height: NSStatusBar.system.thickness
+        ))
+        statusView.toolTip = "Plink"
+        statusView.onClick = { [weak self] in
+            self?.togglePopover(nil)
         }
-
-        // Surface the popover on first launch so the menu bar icon is easy to find.
-        if !UserDefaults.standard.bool(forKey: "PlinkDidIntro") {
-            UserDefaults.standard.set(true, forKey: "PlinkDidIntro")
-            DispatchQueue.main.async { [weak self] in self?.showPopover() }
+        statusView.onFilesHovered = { [weak self] urls in
+            self?.dropController.previewDrag(urls)
+            self?.showPopover()
         }
+        statusView.onFilesDropped = { [weak self] urls in
+            self?.showPopover()
+            self?.dropController.convert(urls)
+        }
+        statusItem?.view = statusView
+        self.statusView = statusView
     }
 
     // Re-opening the app (e.g. double-clicking it again) reveals the popover,
@@ -141,8 +149,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPopover() {
-        guard let button = statusItem?.button else { return }
         NSApp.activate(ignoringOtherApps: true)
+
+        if let statusView {
+            popover.show(relativeTo: statusView.bounds, of: statusView, preferredEdge: .minY)
+            return
+        }
+
+        guard let button = statusItem?.button else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
@@ -184,6 +198,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 private func menuBarImage() -> NSImage? {
     dropletImage(side: 18)  // 18×18pt is the sweet spot for a status item
+}
+
+final class StatusItemDropView: NSView {
+    var onClick: (() -> Void)?
+    var onFilesHovered: (([URL]) -> Void)?
+    var onFilesDropped: (([URL]) -> Void)?
+
+    private let imageView = NSImageView()
+    private var didOpenForCurrentDrag = false
+    private var isDragTargeted = false {
+        didSet {
+            imageView.contentTintColor = isDragTargeted ? .white : .labelColor
+            needsDisplay = true
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        common()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        common()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        guard isDragTargeted else { return }
+
+        let pill = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 2, dy: 2),
+            xRadius: 7,
+            yRadius: 7
+        )
+        NSColor.controlAccentColor.withAlphaComponent(0.78).setFill()
+        pill.fill()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Keep the mouseUp delivery on this view.
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onClick?()
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        handleDrag(sender, openPopover: true)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        handleDrag(sender, openPopover: false)
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        didOpenForCurrentDrag = false
+        isDragTargeted = false
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        didOpenForCurrentDrag = false
+        isDragTargeted = false
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let files = supportedFiles(sender)
+        didOpenForCurrentDrag = false
+        isDragTargeted = false
+
+        guard !files.isEmpty else { return false }
+        onFilesDropped?(files)
+        return true
+    }
+
+    private func common() {
+        wantsLayer = true
+        registerForDraggedTypes([.fileURL])
+
+        imageView.image = menuBarImage()
+        imageView.contentTintColor = .labelColor
+        imageView.imageScaling = .scaleNone
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(imageView)
+
+        NSLayoutConstraint.activate([
+            imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    private func handleDrag(_ sender: NSDraggingInfo, openPopover: Bool) -> NSDragOperation {
+        let files = supportedFiles(sender)
+        guard !files.isEmpty else {
+            isDragTargeted = false
+            return []
+        }
+
+        isDragTargeted = true
+        if openPopover || !didOpenForCurrentDrag {
+            didOpenForCurrentDrag = true
+            onFilesHovered?(files)
+        }
+
+        return .copy
+    }
+
+    private func supportedFiles(_ sender: NSDraggingInfo) -> [URL] {
+        fileURLs(from: sender.draggingPasteboard).filter(HEICConverter.isSupportedFile)
+    }
 }
 
 /// The "Sheen" droplet, drawn as a vector at any size and returned as a template
@@ -312,6 +438,13 @@ final class DropViewController: NSViewController {
     /// Called after the user picks a new destination folder.
     func destinationChanged() {
         dropView.updateDestination()
+    }
+
+    func previewDrag(_ urls: [URL]) {
+        guard !isConverting else { return }
+        let files = urls.filter(HEICConverter.isSupportedFile)
+        guard !files.isEmpty else { return }
+        dropView.previewDrag(fileCount: files.count)
     }
 
     func convert(_ urls: [URL]) {
@@ -775,6 +908,10 @@ final class DropView: NSView {
         if footerShowsDestination {
             footerLabel.stringValue = Destination.savesToText
         }
+    }
+
+    func previewDrag(fileCount: Int) {
+        applyDrag(fileCount: fileCount)
     }
 
     private func applyDrag(fileCount: Int) {

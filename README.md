@@ -30,7 +30,7 @@ warnings. Prefer to compile it yourself? See [Build](#build).
 ## Features
 
 - 🪶 **Tiny & native** — a single Swift file, no dependencies, pure system frameworks (AppKit + ImageIO).
-- 🎯 **Drag & drop** — drop `.heic`/`.heif` onto the menu bar popover, or click to choose files.
+- 🎯 **Drag & drop** — drop `.heic`/`.heif` onto the popover, or drag files over the menu bar droplet to open it automatically.
 - 🗂 **Finder Quick Action** — right-click HEIC files → **Quick Actions → Convert HEIC to JPG**.
 - ⚡️ **Batch + progress** — converts multiple files at once with a live progress bar.
 - 🖼 **Quality preserved** — keeps orientation metadata, exports at 92% JPEG quality.
@@ -64,9 +64,13 @@ The installer:
 
 ## Usage
 
-Click the droplet in the menu bar, then drop `.heic` or `.heif` files onto the popover (or click the drop zone to choose files). Converted JPGs land on your Desktop. Right-click the menu bar icon to quit.
+Click the droplet in the menu bar, then drop `.heic` or `.heif` files onto the popover (or click the drop zone to choose files). You can also drag HEIC files straight over the menu bar droplet; Plink opens the popover only while you are dragging supported files. Converted JPGs land on your Desktop. Right-click the menu bar icon to quit.
 
 You can also right-click HEIC files in Finder and choose **Quick Actions → Convert HEIC to JPG**.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Installing a release
 

@@ -41,12 +41,31 @@ gh secret set APPLE_APP_PASSWORD    # the app-specific password from step 2
 
 ## Cutting a release
 
+Before tagging:
+
+1. Pick the next semver tag, usually patch-level for small app improvements.
+2. Update `CFBundleShortVersionString` and `CFBundleVersion` in `App/Info.plist`.
+3. Update `CHANGELOG.md` with the release date and user-facing changes.
+4. Update `README.md` if behavior, install instructions, or screenshots changed.
+5. Run local validation:
+
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+./build.sh
+```
+
+Then commit and tag:
+
+```sh
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin main
+git push origin vX.Y.Z
 ```
 
 The workflow runs automatically and publishes the notarized `Plink.zip`.
+
+When using Codex for release work, invoke `$plink-release` so README,
+CHANGELOG, `App/Info.plist`, validation, commit, tag, push, and release
+verification happen as one checklist.
 
 ## Building a notarized app locally (optional)
 

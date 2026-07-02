@@ -37,7 +37,9 @@ if [[ -f "$ICON_SRC" ]]; then
     double=$((size * 2))
     sips -z "$double" "$double" "$ICON_SRC" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
   done
-  iconutil -c icns "$ICONSET" -o "$RESOURCES_DIR/AppIcon.icns"
+  if ! iconutil -c icns "$ICONSET" -o "$RESOURCES_DIR/AppIcon.icns"; then
+    echo "Warning: could not generate AppIcon.icns; continuing without bundled icon." >&2
+  fi
   rm -rf "$(dirname "$ICONSET")"
 fi
 
