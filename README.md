@@ -35,6 +35,7 @@ warnings. Prefer to compile it yourself? See [Build](#build).
 - ⚡️ **Batch + progress** — converts multiple files at once with a live progress bar.
 - 🖼 **Quality preserved** — keeps orientation metadata, exports at 92% JPEG quality.
 - 📂 JPGs are saved to your **Desktop** by default; the **Reveal** button jumps straight to them.
+- 🔄 **Quiet update checks** — Plink checks GitHub releases once a day and shows a small menu bar dot when a new version is ready.
 
 ## Requirements
 
@@ -67,6 +68,8 @@ The installer:
 Click the droplet in the menu bar, then drop `.heic` or `.heif` files onto the popover (or click the drop zone to choose files). You can also drag HEIC files straight over the menu bar droplet; Plink opens the popover only while you are dragging supported files. Converted JPGs land on your Desktop. Right-click the menu bar icon to quit.
 
 You can also right-click HEIC files in Finder and choose **Quick Actions → Convert HEIC to JPG**.
+
+Plink checks for new GitHub releases quietly in the background once a day. If an update is available, the menu bar droplet gets a small dot; click Plink and use the update button, or right-click the droplet and choose **Download Plink**. You can also check manually from the update button any time.
 
 ## Changelog
 

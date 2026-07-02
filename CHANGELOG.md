@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.4 - 2026-07-02
+
+- Added quiet update checking against the latest GitHub release.
+- Added an update badge on the menu bar droplet when a newer version is available.
+- Added manual update checks from the popover and status item right-click menu.
+
 ## v1.0.3 - 2026-07-02
 
 - Added drag-over activation for the menu bar droplet: dragging supported HEIC/HEIF files over the icon opens the popover in drop-ready mode.

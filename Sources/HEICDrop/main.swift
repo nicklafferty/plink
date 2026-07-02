@@ -40,11 +40,155 @@ enum CommandLineRunner {
     }
 }
 
+struct UpdateInfo {
+    let version: String
+    let releaseURL: URL
+    let downloadURL: URL?
+}
+
+enum UpdateCheckResult {
+    case skipped
+    case available(UpdateInfo)
+    case upToDate(currentVersion: String)
+    case failure(String)
+}
+
+final class UpdateChecker {
+    static let latestReleasePageURL = URL(string: "https://github.com/nicklafferty/plink/releases/latest")!
+
+    private let latestReleaseAPIURL = URL(string: "https://api.github.com/repos/nicklafferty/plink/releases/latest")!
+    private let lastAutomaticCheckKey = "PlinkLastAutomaticUpdateCheck"
+    private let automaticInterval: TimeInterval = 24 * 60 * 60
+
+    var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    func check(manual: Bool, completion: @escaping (UpdateCheckResult) -> Void) {
+        if !manual, !shouldRunAutomaticCheck() {
+            completion(.skipped)
+            return
+        }
+
+        var request = URLRequest(url: latestReleaseAPIURL)
+        request.setValue("Plink", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 12
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+
+            if !manual {
+                UserDefaults.standard.set(Date(), forKey: self.lastAutomaticCheckKey)
+            }
+
+            if let error {
+                completion(.failure("Could not reach GitHub: \(error.localizedDescription)"))
+                return
+            }
+
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                completion(.failure("GitHub returned HTTP \(http.statusCode)."))
+                return
+            }
+
+            guard let data else {
+                completion(.failure("GitHub returned an empty response."))
+                return
+            }
+
+            do {
+                let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+                let latestVersion = Self.displayVersion(fromTag: release.tagName)
+                guard let releaseURL = URL(string: release.htmlURL) else {
+                    completion(.failure("The latest release URL was invalid."))
+                    return
+                }
+
+                let downloadURL = release.assets
+                    .first(where: { $0.name == "Plink.zip" })
+                    .flatMap { URL(string: $0.browserDownloadURL) }
+                let info = UpdateInfo(
+                    version: latestVersion,
+                    releaseURL: releaseURL,
+                    downloadURL: downloadURL
+                )
+
+                if Self.isVersion(latestVersion, newerThan: self.currentVersion) {
+                    completion(.available(info))
+                } else {
+                    completion(.upToDate(currentVersion: self.currentVersion))
+                }
+            } catch {
+                completion(.failure("Could not read the latest release info."))
+            }
+        }.resume()
+    }
+
+    private func shouldRunAutomaticCheck() -> Bool {
+        guard let lastCheck = UserDefaults.standard.object(forKey: lastAutomaticCheckKey) as? Date else {
+            return true
+        }
+        return Date().timeIntervalSince(lastCheck) >= automaticInterval
+    }
+
+    private static func displayVersion(fromTag tag: String) -> String {
+        tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+    }
+
+    private static func isVersion(_ lhs: String, newerThan rhs: String) -> Bool {
+        let left = numericVersionParts(lhs)
+        let right = numericVersionParts(rhs)
+        let count = max(left.count, right.count)
+
+        for index in 0..<count {
+            let l = index < left.count ? left[index] : 0
+            let r = index < right.count ? right[index] : 0
+            if l != r { return l > r }
+        }
+
+        return false
+    }
+
+    private static func numericVersionParts(_ version: String) -> [Int] {
+        displayVersion(fromTag: version)
+            .split(separator: ".")
+            .map { part in
+                let digits = part.prefix { $0.isNumber }
+                return Int(digits) ?? 0
+            }
+    }
+
+    private struct GitHubRelease: Decodable {
+        let tagName: String
+        let htmlURL: String
+        let assets: [Asset]
+
+        enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+            case htmlURL = "html_url"
+            case assets
+        }
+    }
+
+    private struct Asset: Decodable {
+        let name: String
+        let browserDownloadURL: String
+
+        enum CodingKeys: String, CodingKey {
+            case name
+            case browserDownloadURL = "browser_download_url"
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var statusView: StatusItemDropView?
     private let popover = NSPopover()
     private let dropController = DropViewController()
+    private let updateChecker = UpdateChecker()
+    private var availableUpdate: UpdateInfo?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -59,6 +203,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         dropController.chooseDestinationHandler = { [weak self] in
             self?.chooseDestination()
+        }
+
+        dropController.checkForUpdatesHandler = { [weak self] in
+            self?.checkForUpdates(manual: true)
+        }
+
+        dropController.openUpdateHandler = { [weak self] in
+            self?.openAvailableUpdate()
         }
 
         NSApp.servicesProvider = self
@@ -81,6 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusView.onClick = { [weak self] in
             self?.togglePopover(nil)
         }
+        statusView.onRightClick = { [weak self] event in
+            self?.showStatusMenu(with: event)
+        }
         statusView.onFilesHovered = { [weak self] urls in
             self?.dropController.previewDrag(urls)
             self?.showPopover()
@@ -91,6 +246,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItem?.view = statusView
         self.statusView = statusView
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.checkForUpdates(manual: false)
+        }
     }
 
     // Re-opening the app (e.g. double-clicking it again) reveals the popover,
@@ -148,6 +307,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func checkForUpdatesFromMenu(_ sender: Any?) {
+        checkForUpdates(manual: true)
+    }
+
+    @objc private func chooseFilesFromMenu(_ sender: Any?) {
+        chooseFiles()
+    }
+
+    @objc private func chooseDestinationFromMenu(_ sender: Any?) {
+        chooseDestination()
+    }
+
+    @objc private func quitFromMenu(_ sender: Any?) {
+        NSApp.terminate(nil)
+    }
+
+    private func showStatusMenu(with event: NSEvent) {
+        guard let statusView else { return }
+
+        let menu = NSMenu()
+        let updateTitle = availableUpdate.map { "Download Plink \($0.version)" } ?? "Check for Updates..."
+        let updateItem = NSMenuItem(title: updateTitle, action: #selector(checkForUpdatesFromMenu(_:)), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
+        menu.addItem(NSMenuItem.separator())
+
+        let chooseItem = NSMenuItem(title: "Choose Files...", action: #selector(chooseFilesFromMenu(_:)), keyEquivalent: "")
+        chooseItem.target = self
+        menu.addItem(chooseItem)
+
+        let destinationItem = NSMenuItem(title: "Change Destination...", action: #selector(chooseDestinationFromMenu(_:)), keyEquivalent: "")
+        destinationItem.target = self
+        menu.addItem(destinationItem)
+        menu.addItem(NSMenuItem.separator())
+
+        let quitItem = NSMenuItem(title: "Quit Plink", action: #selector(quitFromMenu(_:)), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        NSMenu.popUpContextMenu(menu, with: event, for: statusView)
+    }
+
     private func showPopover() {
         NSApp.activate(ignoringOtherApps: true)
 
@@ -194,6 +395,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.dropController.destinationChanged()
         }
     }
+
+    private func checkForUpdates(manual: Bool) {
+        if availableUpdate != nil, manual {
+            openAvailableUpdate()
+            return
+        }
+
+        if manual {
+            showPopover()
+            dropController.showCheckingForUpdates()
+        }
+
+        updateChecker.check(manual: manual) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.handleUpdateResult(result, manual: manual)
+            }
+        }
+    }
+
+    private func handleUpdateResult(_ result: UpdateCheckResult, manual: Bool) {
+        switch result {
+        case .skipped:
+            break
+        case .available(let update):
+            availableUpdate = update
+            statusView?.showsUpdateBadge = true
+            statusView?.toolTip = "Plink \(update.version) is available"
+            dropController.showUpdateAvailable(update, announce: manual)
+        case .upToDate(let currentVersion):
+            availableUpdate = nil
+            statusView?.showsUpdateBadge = false
+            statusView?.toolTip = "Plink"
+            dropController.clearUpdateAvailable()
+            if manual {
+                dropController.showUpToDate(version: currentVersion)
+            }
+        case .failure(let message):
+            if manual {
+                dropController.showUpdateError(message)
+            }
+        }
+    }
+
+    private func openAvailableUpdate() {
+        let url = availableUpdate?.downloadURL
+            ?? availableUpdate?.releaseURL
+            ?? UpdateChecker.latestReleasePageURL
+        NSWorkspace.shared.open(url)
+    }
 }
 
 private func menuBarImage() -> NSImage? {
@@ -202,10 +452,15 @@ private func menuBarImage() -> NSImage? {
 
 final class StatusItemDropView: NSView {
     var onClick: (() -> Void)?
+    var onRightClick: ((NSEvent) -> Void)?
     var onFilesHovered: (([URL]) -> Void)?
     var onFilesDropped: (([URL]) -> Void)?
+    var showsUpdateBadge = false {
+        didSet { badgeView.isHidden = !showsUpdateBadge }
+    }
 
     private let imageView = NSImageView()
+    private let badgeView = NSView()
     private var didOpenForCurrentDrag = false
     private var isDragTargeted = false {
         didSet {
@@ -227,15 +482,16 @@ final class StatusItemDropView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        guard isDragTargeted else { return }
+        if isDragTargeted {
+            let pill = NSBezierPath(
+                roundedRect: bounds.insetBy(dx: 2, dy: 2),
+                xRadius: 7,
+                yRadius: 7
+            )
+            NSColor.controlAccentColor.withAlphaComponent(0.78).setFill()
+            pill.fill()
+        }
 
-        let pill = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 2, dy: 2),
-            xRadius: 7,
-            yRadius: 7
-        )
-        NSColor.controlAccentColor.withAlphaComponent(0.78).setFill()
-        pill.fill()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -244,7 +500,15 @@ final class StatusItemDropView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        if event.modifierFlags.contains(.control) {
+            onRightClick?(event)
+            return
+        }
         onClick?()
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        onRightClick?(event)
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -285,9 +549,20 @@ final class StatusItemDropView: NSView {
         imageView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(imageView)
 
+        badgeView.wantsLayer = true
+        badgeView.layer?.backgroundColor = NSColor.systemMint.cgColor
+        badgeView.layer?.cornerRadius = 2.5
+        badgeView.isHidden = true
+        badgeView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(badgeView)
+
         NSLayoutConstraint.activate([
             imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            imageView.centerYAnchor.constraint(equalTo: centerYAnchor)
+            imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            badgeView.widthAnchor.constraint(equalToConstant: 5),
+            badgeView.heightAnchor.constraint(equalToConstant: 5),
+            badgeView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
+            badgeView.topAnchor.constraint(equalTo: topAnchor, constant: 4)
         ])
     }
 
@@ -387,6 +662,8 @@ final class DropViewController: NSViewController {
     var chooseFilesHandler: (() -> Void)?
     var quitHandler: (() -> Void)?
     var chooseDestinationHandler: (() -> Void)?
+    var checkForUpdatesHandler: (() -> Void)?
+    var openUpdateHandler: (() -> Void)?
 
     private let dropView = DropView()
     private let converter = HEICConverter()
@@ -433,6 +710,14 @@ final class DropViewController: NSViewController {
         dropView.onChooseDestination = { [weak self] in
             self?.chooseDestinationHandler?()
         }
+
+        dropView.onCheckForUpdates = { [weak self] in
+            self?.checkForUpdatesHandler?()
+        }
+
+        dropView.onOpenUpdate = { [weak self] in
+            self?.openUpdateHandler?()
+        }
     }
 
     /// Called after the user picks a new destination folder.
@@ -445,6 +730,31 @@ final class DropViewController: NSViewController {
         let files = urls.filter(HEICConverter.isSupportedFile)
         guard !files.isEmpty else { return }
         dropView.previewDrag(fileCount: files.count)
+    }
+
+    func showCheckingForUpdates() {
+        guard !isConverting else { return }
+        dropView.showCheckingForUpdates()
+    }
+
+    func showUpdateAvailable(_ update: UpdateInfo, announce: Bool) {
+        dropView.setUpdateAvailable(version: update.version)
+        guard announce, !isConverting else { return }
+        dropView.showUpdateAvailable(version: update.version)
+    }
+
+    func clearUpdateAvailable() {
+        dropView.clearUpdateAvailable()
+    }
+
+    func showUpToDate(version: String) {
+        guard !isConverting else { return }
+        dropView.showMessage(title: "Plink is up to date", detail: "Version \(version)")
+    }
+
+    func showUpdateError(_ message: String) {
+        guard !isConverting else { return }
+        dropView.showUpdateError(detail: message)
     }
 
     func convert(_ urls: [URL]) {
@@ -603,16 +913,20 @@ final class DropView: NSView {
     var onReveal: (() -> Void)?
     var onQuit: (() -> Void)?
     var onChooseDestination: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)?
+    var onOpenUpdate: (() -> Void)?
 
     // Header
     private let titleLabel = NSTextField(labelWithString: "Plink")
     private let headerSpinner = NSProgressIndicator()
+    private let updateButton = GhostIconButton()
     private let destinationButton = GhostIconButton()
     private let quitButton = GhostIconButton()
 
     // True while the footer is showing the "Saves to …" destination text
     // (i.e. not a done/error message), so we know when to refresh it live.
     private var footerShowsDestination = true
+    private var updateVersion: String?
 
     // Body
     private let dropZone = DropZoneView()
@@ -684,6 +998,16 @@ final class DropView: NSView {
         destinationButton.toolTip = "Change where JPGs are saved"
         destinationButton.onClick = { [weak self] in self?.onChooseDestination?() }
 
+        updateButton.configure(symbol: "arrow.triangle.2.circlepath", point: 12, color: .mnWhite(0.45))
+        updateButton.toolTip = "Check for Updates"
+        updateButton.onClick = { [weak self] in
+            if self?.updateVersion == nil {
+                self?.onCheckForUpdates?()
+            } else {
+                self?.onOpenUpdate?()
+            }
+        }
+
         let titleRow = NSStackView(views: [chip, titleLabel])
         titleRow.spacing = 9
         titleRow.alignment = .centerY
@@ -693,6 +1017,7 @@ final class DropView: NSView {
         header.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(titleRow)
         header.addSubview(headerSpinner)
+        header.addSubview(updateButton)
         header.addSubview(destinationButton)
         header.addSubview(quitButton)
         let divider1 = hairline()
@@ -805,6 +1130,10 @@ final class DropView: NSView {
             destinationButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             destinationButton.widthAnchor.constraint(equalToConstant: 26),
             destinationButton.heightAnchor.constraint(equalToConstant: 26),
+            updateButton.trailingAnchor.constraint(equalTo: destinationButton.leadingAnchor, constant: -2),
+            updateButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            updateButton.widthAnchor.constraint(equalToConstant: 26),
+            updateButton.heightAnchor.constraint(equalToConstant: 26),
             headerSpinner.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
             headerSpinner.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
@@ -851,6 +1180,7 @@ final class DropView: NSView {
         headerSpinner.startAnimation(nil)
         quitButton.isHidden = true
         destinationButton.isHidden = true
+        updateButton.isHidden = true
         convTitle.stringValue = "Converting…"
         convCount.stringValue = "\(completed) of \(total)"
         convBar.fraction = total > 0 ? CGFloat(completed) / CGFloat(total) : 0
@@ -888,6 +1218,44 @@ final class DropView: NSView {
         applyIdle()
         zoneTitle.stringValue = title
         zoneSub.stringValue = detail
+    }
+
+    func showCheckingForUpdates() {
+        showMessage(title: "Checking for updates…", detail: "Looking for the latest Plink release")
+        zoneIcon.image = symbol("arrow.triangle.2.circlepath", point: 30, weight: .regular)
+        zoneIcon.contentTintColor = .white
+    }
+
+    func showUpdateAvailable(version: String) {
+        setUpdateAvailable(version: version)
+        showMessage(title: "Update available", detail: "Plink \(version) is ready")
+        zoneIcon.image = symbol("arrow.down.circle", point: 34, weight: .regular)
+        zoneIcon.contentTintColor = .mnGreen
+    }
+
+    func showUpdateError(detail: String) {
+        stopSpinner()
+        showConvertingBody(false)
+        dropZone.mode = .none
+        zoneIcon.image = symbol("exclamationmark.circle", point: 34, weight: .regular)
+        zoneIcon.contentTintColor = .mnRed
+        zoneTitle.stringValue = "Couldn’t check updates"
+        zoneSub.stringValue = detail
+        footerShowsDestination = false
+        footerLabel.stringValue = "Try again later"
+        revealButton.isEnabled = false
+    }
+
+    func setUpdateAvailable(version: String) {
+        updateVersion = version
+        updateButton.configure(symbol: "arrow.down.circle", point: 13, color: .white)
+        updateButton.toolTip = "Download Plink \(version)"
+    }
+
+    func clearUpdateAvailable() {
+        updateVersion = nil
+        updateButton.configure(symbol: "arrow.triangle.2.circlepath", point: 12, color: .mnWhite(0.45))
+        updateButton.toolTip = "Check for Updates"
     }
 
     // MARK: Idle / drag visuals
@@ -931,6 +1299,7 @@ final class DropView: NSView {
     private func stopSpinner() {
         headerSpinner.stopAnimation(nil)
         headerSpinner.isHidden = true
+        updateButton.isHidden = false
         quitButton.isHidden = false
         destinationButton.isHidden = false
     }
