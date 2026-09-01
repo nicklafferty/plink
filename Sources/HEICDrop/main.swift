@@ -3,6 +3,7 @@ import Darwin
 import ImageIO
 import UniformTypeIdentifiers
 
+#if !PLINK_TESTING
 @main
 enum PlinkMain {
     static func main() {
@@ -19,6 +20,7 @@ enum PlinkMain {
 }
 
 private var retainedAppDelegate: AppDelegate?
+#endif
 
 enum CommandLineRunner {
     static func run(arguments: [String]) -> Int {
@@ -385,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = "Use Folder"
-        panel.message = "Choose where converted JPGs are saved"
+        panel.message = "Choose a custom folder for converted JPGs"
         panel.directoryURL = Destination.folder
 
         NSApp.activate(ignoringOtherApps: true)
@@ -799,7 +801,10 @@ final class DropViewController: NSViewController {
 
         let noun = successes.count == 1 ? "JPG" : "JPGs"
         if failures.isEmpty {
-            dropView.showDone(title: "\(successes.count) \(noun) saved", detail: "On your Desktop")
+            dropView.showDone(
+                title: "\(successes.count) \(noun) saved",
+                detail: Destination.savedDetail(for: results)
+            )
         } else {
             dropView.showDone(
                 title: "\(successes.count) \(noun) saved",
@@ -1434,39 +1439,170 @@ final class TextLinkButton: NSButton {
     @objc private func fire() { if isEnabled { onClick?() } }
 }
 
-/// Where converted JPGs are saved. Persists across launches (and is shared with
-/// the `--convert` CLI / Finder Quick Action, since they read the same defaults).
+/// An optional custom folder for converted JPGs. Without one, each JPG is saved
+/// beside its source file. The preference is shared with the `--convert` CLI and
+/// Finder Quick Action.
+enum DestinationSelection {
+    case nextToOriginals
+    case custom(URL)
+    case unavailableCustom(URL)
+}
+
+struct DestinationEnvironment {
+    let fileManager: FileManager
+    let desktop: URL
+    let temporaryDirectory: URL
+    let libraryDirectory: URL
+
+    static var live: DestinationEnvironment {
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser
+        return DestinationEnvironment(
+            fileManager: fileManager,
+            desktop: fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first ?? home,
+            temporaryDirectory: fileManager.temporaryDirectory,
+            libraryDirectory: home.appendingPathComponent("Library", isDirectory: true)
+        )
+    }
+}
+
 enum Destination {
     private static let defaultsKey = "PlinkDestinationPath"
 
     static var desktop: URL {
-        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
+        DestinationEnvironment.live.desktop
     }
 
-    /// The chosen folder, falling back to the Desktop if unset or missing.
-    static var folder: URL {
-        if let path = UserDefaults.standard.string(forKey: defaultsKey), !path.isEmpty {
-            let url = URL(fileURLWithPath: path, isDirectory: true)
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                return url
-            }
+    static var selection: DestinationSelection {
+        guard let path = UserDefaults.standard.string(forKey: defaultsKey), !path.isEmpty else {
+            return .nextToOriginals
         }
-        return desktop
+
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+            return .custom(url)
+        }
+        return .unavailableCustom(url)
+    }
+
+    /// The chosen custom folder, if it still exists.
+    static var customFolder: URL? {
+        if case .custom(let url) = selection {
+            return url
+        }
+        return nil
+    }
+
+    /// Used as the starting location when the user chooses a custom destination.
+    static var folder: URL {
+        customFolder ?? desktop
     }
 
     static func set(_ url: URL) {
         UserDefaults.standard.set(url.path, forKey: defaultsKey)
     }
 
-    static var isDesktop: Bool {
-        folder.standardizedFileURL == desktop.standardizedFileURL
+    static func isDesktop(_ url: URL, environment: DestinationEnvironment = .live) -> Bool {
+        url.standardizedFileURL == environment.desktop.standardizedFileURL
     }
 
-    /// Footer phrasing: "Saves to your Desktop" or "Saves to <Folder>".
+    /// Footer phrasing for the default behavior or a custom destination.
     static var savesToText: String {
-        isDesktop ? "Saves to your Desktop" : "Saves to \(folder.lastPathComponent)"
+        switch selection {
+        case .nextToOriginals:
+            return "Saves next to originals"
+        case .custom(let url):
+            return isDesktop(url) ? "Saves to your Desktop" : "Saves to \(url.lastPathComponent)"
+        case .unavailableCustom:
+            return "Destination unavailable"
+        }
+    }
+
+    static func outputURL(
+        for inputURL: URL,
+        selection: DestinationSelection,
+        environment: DestinationEnvironment = .live
+    ) throws -> URL {
+        let folder: URL
+
+        switch selection {
+        case .nextToOriginals:
+            let sourceFolder = inputURL.deletingLastPathComponent().standardizedFileURL
+            folder = isUserVisibleDefaultFolder(sourceFolder, environment: environment)
+                ? sourceFolder
+                : environment.desktop
+        case .custom(let url):
+            folder = url
+        case .unavailableCustom(let url):
+            throw ConversionError.destinationUnavailable(url.lastPathComponent)
+        }
+
+        let baseName = inputURL.deletingPathExtension().lastPathComponent
+        var candidate = folder.appendingPathComponent("\(baseName).jpg")
+        var suffix = 2
+
+        while environment.fileManager.fileExists(atPath: candidate.path) {
+            candidate = folder.appendingPathComponent("\(baseName)-\(suffix).jpg")
+            suffix += 1
+        }
+
+        return candidate
+    }
+
+    static func savedDetail(
+        for results: [ConversionResult],
+        environment: DestinationEnvironment = .live
+    ) -> String {
+        let successful = results.compactMap { result -> (input: URL, output: URL)? in
+            guard let output = result.outputURL else { return nil }
+            return (result.inputURL, output)
+        }
+
+        let allBesideOriginals = successful.allSatisfy { pair in
+            pair.input.deletingLastPathComponent().standardizedFileURL
+                == pair.output.deletingLastPathComponent().standardizedFileURL
+        }
+
+        if allBesideOriginals {
+            return successful.count == 1 ? "Next to the original" : "Next to each original"
+        }
+
+        let outputFolders = Set(successful.map { $0.output.deletingLastPathComponent().standardizedFileURL })
+        if outputFolders.count == 1, let folder = outputFolders.first {
+            return isDesktop(folder, environment: environment)
+                ? "On your Desktop"
+                : "In \(folder.lastPathComponent)"
+        }
+
+        return "Saved in \(outputFolders.count) folders"
+    }
+
+    private static func isUserVisibleDefaultFolder(
+        _ folder: URL,
+        environment: DestinationEnvironment
+    ) -> Bool {
+        let standardized = folder.standardizedFileURL
+        let hiddenRoots = [
+            environment.temporaryDirectory.standardizedFileURL,
+            environment.libraryDirectory.standardizedFileURL,
+            URL(fileURLWithPath: "/tmp", isDirectory: true).standardizedFileURL,
+            URL(fileURLWithPath: "/private/tmp", isDirectory: true).standardizedFileURL,
+            URL(fileURLWithPath: "/var/tmp", isDirectory: true).standardizedFileURL,
+            URL(fileURLWithPath: "/private/var/folders", isDirectory: true).standardizedFileURL
+        ]
+
+        guard !hiddenRoots.contains(where: { standardized == $0 || standardized.path.hasPrefix($0.path + "/") }) else {
+            return false
+        }
+
+        guard !standardized.pathComponents.contains(where: { component in
+            component.hasPrefix(".") && component != "." && component != ".."
+        }) else {
+            return false
+        }
+
+        return true
     }
 }
 
@@ -1488,11 +1624,16 @@ final class HEICConverter {
         progress: @escaping (_ completed: Int, _ total: Int, _ currentFile: String?) -> Void,
         completion: @escaping ([ConversionResult]) -> Void
     ) {
+        let destination = Destination.selection
         DispatchQueue.global(qos: .userInitiated).async {
             var results: [ConversionResult] = []
 
             for (index, url) in urls.enumerated() {
-                let result = self.convertFile(url)
+                let result = self.convertFile(
+                    url,
+                    destination: destination,
+                    environment: .live
+                )
                 results.append(result)
                 progress(index + 1, urls.count, url.lastPathComponent)
             }
@@ -1502,12 +1643,55 @@ final class HEICConverter {
     }
 
     func convertFile(_ inputURL: URL) -> ConversionResult {
+        convertFile(inputURL, destination: Destination.selection, environment: .live)
+    }
+
+    func convertFile(
+        _ inputURL: URL,
+        destination: DestinationSelection,
+        environment: DestinationEnvironment
+    ) -> ConversionResult {
         do {
-            let outputURL = try outputURL(for: inputURL)
-            try writeJPEG(from: inputURL, to: outputURL)
+            let outputURL = try writeJPEG(
+                from: inputURL,
+                destination: destination,
+                environment: environment
+            )
             return ConversionResult(inputURL: inputURL, outputURL: outputURL, message: nil)
         } catch {
             return ConversionResult(inputURL: inputURL, outputURL: nil, message: error.localizedDescription)
+        }
+    }
+
+    private func writeJPEG(
+        from inputURL: URL,
+        destination: DestinationSelection,
+        environment: DestinationEnvironment
+    ) throws -> URL {
+        let outputURL = try Destination.outputURL(
+            for: inputURL,
+            selection: destination,
+            environment: environment
+        )
+
+        do {
+            try writeJPEG(from: inputURL, to: outputURL)
+            return outputURL
+        } catch let error as ConversionError {
+            guard case .nextToOriginals = destination,
+                  error.isDestinationWriteFailure,
+                  outputURL.deletingLastPathComponent().standardizedFileURL
+                    != environment.desktop.standardizedFileURL else {
+                throw error
+            }
+
+            let fallbackURL = try Destination.outputURL(
+                for: inputURL,
+                selection: .custom(environment.desktop),
+                environment: environment
+            )
+            try writeJPEG(from: inputURL, to: fallbackURL)
+            return fallbackURL
         }
     }
 
@@ -1551,19 +1735,6 @@ final class HEICConverter {
         }
     }
 
-    private func outputURL(for inputURL: URL) throws -> URL {
-        let folder = Destination.folder
-        let baseName = inputURL.deletingPathExtension().lastPathComponent
-        var candidate = folder.appendingPathComponent("\(baseName).jpg")
-        var suffix = 2
-
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = folder.appendingPathComponent("\(baseName)-\(suffix).jpg")
-            suffix += 1
-        }
-
-        return candidate
-    }
 }
 
 enum ConversionError: LocalizedError {
@@ -1571,6 +1742,16 @@ enum ConversionError: LocalizedError {
     case cannotRead(String)
     case cannotCreate(String)
     case cannotWrite(String)
+    case destinationUnavailable(String)
+
+    var isDestinationWriteFailure: Bool {
+        switch self {
+        case .cannotCreate, .cannotWrite:
+            return true
+        case .unsupported, .cannotRead, .destinationUnavailable:
+            return false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -1582,6 +1763,8 @@ enum ConversionError: LocalizedError {
             return "Could not create \(file)."
         case .cannotWrite(let file):
             return "Could not write \(file)."
+        case .destinationUnavailable(let folder):
+            return "\(folder) is unavailable. Choose a different destination."
         }
     }
 }

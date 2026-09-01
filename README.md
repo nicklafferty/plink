@@ -4,7 +4,7 @@
 
 <h1 align="center">Plink</h1>
 
-<p align="center">A tiny macOS menu bar app that converts HEIC/HEIF photos to JPG.<br>Drag them in — JPGs <em>plink</em> onto your Desktop.</p>
+<p align="center">A tiny macOS menu bar app that converts HEIC/HEIF photos to JPG.<br>Drag them in. JPGs <em>plink</em> next to the originals.</p>
 
 <p align="center">
   <a href="https://justplink.com"><b>Website</b></a> ·
@@ -34,7 +34,7 @@ warnings. Prefer to compile it yourself? See [Build](#build).
 - 🗂 **Finder Quick Action** — right-click HEIC files → **Quick Actions → Convert HEIC to JPG**.
 - ⚡️ **Batch + progress** — converts multiple files at once with a live progress bar.
 - 🖼 **Quality preserved** — keeps orientation metadata, exports at 92% JPEG quality.
-- 📂 JPGs are saved to your **Desktop** by default; the **Reveal** button jumps straight to them.
+- 📂 JPGs are saved **next to their originals** by default; choose a custom destination any time.
 - 🔄 **Quiet update checks** — Plink checks GitHub releases once a day and shows a small menu bar dot when a new version is ready.
 
 ## Requirements
@@ -65,9 +65,9 @@ The installer:
 
 ## Usage
 
-Click the droplet in the menu bar, then drop `.heic` or `.heif` files onto the popover (or click the drop zone to choose files). You can also drag HEIC files straight over the menu bar droplet; Plink opens the popover only while you are dragging supported files. Converted JPGs land on your Desktop. Right-click the menu bar icon to quit.
+Click the droplet in the menu bar, then drop `.heic` or `.heif` files onto the popover (or click the drop zone to choose files). You can also drag HEIC files straight over the menu bar droplet; Plink opens the popover only while you are dragging supported files. Converted JPGs land beside their original files by default. Files from temporary, hidden, or unwritable folders fall back to your Desktop. Right-click the menu bar icon to quit.
 
-You can also right-click HEIC files in Finder and choose **Quick Actions → Convert HEIC to JPG**.
+You can also right-click HEIC files in Finder and choose **Quick Actions → Convert HEIC to JPG**. The converted JPG is saved in the same Finder folder as the original when that folder is writable; otherwise it falls back to your Desktop.
 
 Plink checks for new GitHub releases quietly in the background once a day. If an update is available, the menu bar droplet gets a small dot; click Plink and use the update button, or right-click the droplet and choose **Download Plink**. You can also check manually from the update button any time.
 

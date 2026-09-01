@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.5 - 2026-09-01
+
+- Changed the default destination so converted JPGs are saved beside their original HEIC or HEIF files.
+- Applied the same source-folder behavior to menu bar drops, Finder Quick Actions, file opening, and command-line conversions.
+- Kept explicitly selected custom destination folders unchanged.
+- Added a Desktop fallback for temporary, hidden, and unwritable source folders.
+- Added regression coverage for destination selection, custom folders, fallback behavior, and filename collisions.
+
 ## v1.0.4 - 2026-07-02
 
 - Added quiet update checking against the latest GitHub release.
