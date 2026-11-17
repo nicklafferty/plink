@@ -184,6 +184,36 @@ final class UpdateChecker {
     }
 }
 
+enum QuickActionMigration {
+    // Older installers reopened the app after their command-line conversion.
+    static func repair(at url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let data = try Data(contentsOf: url)
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        guard var workflow = try PropertyListSerialization.propertyList(from: data, format: &format) as? [String: Any],
+              var actions = workflow["actions"] as? [[String: Any]] else { return }
+        var changed = false
+        for index in actions.indices {
+            guard var action = actions[index]["action"] as? [String: Any],
+                  var parameters = action["ActionParameters"] as? [String: Any],
+                  let script = parameters["COMMAND_STRING"] as? String,
+                  script.contains("converter=\"/Applications/Plink.app/Contents/MacOS/Plink\"") else { continue }
+            let legacyLine = "open -a \"/Applications/Plink.app\" >/dev/null 2>&1 || true"
+            let repaired = script.components(separatedBy: "\n")
+                .filter { $0 != legacyLine }.joined(separator: "\n")
+            guard repaired != script else { continue }
+            parameters["COMMAND_STRING"] = repaired
+            action["ActionParameters"] = parameters
+            actions[index]["action"] = action
+            changed = true
+        }
+        guard changed else { return }
+        workflow["actions"] = actions
+        let repaired = try PropertyListSerialization.data(fromPropertyList: workflow, format: format, options: 0)
+        try repaired.write(to: url, options: .atomic)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var statusView: StatusItemDropView?
@@ -194,6 +224,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        let workflow = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Services/Convert HEIC to JPG.workflow/Contents/Resources/document.wflow")
+        do {
+            try QuickActionMigration.repair(at: workflow)
+        } catch {
+            NSLog("Could not update Plink Quick Action: %@", error.localizedDescription)
+        }
 
         dropController.chooseFilesHandler = { [weak self] in
             self?.chooseFiles()
@@ -296,7 +334,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.showPopover()
             self?.dropController.convert(files)
         }
     }

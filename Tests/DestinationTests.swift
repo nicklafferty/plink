@@ -163,7 +163,35 @@ enum DestinationTests {
             "failed source-folder writes should retry on the Desktop"
         )
 
-        print("Destination tests passed")
+        let workflowURL = root.appendingPathComponent("document.wflow")
+        let originalScript = """
+        converter="/Applications/Plink.app/Contents/MacOS/Plink"
+        "$converter" --convert "$1" >/dev/null
+        open -a "/Applications/Plink.app" >/dev/null 2>&1 || true
+        """
+        let workflow: [String: Any] = [
+            "actions": [["action": ["ActionParameters": ["COMMAND_STRING": originalScript]]]],
+            "workflowMetaData": ["preserved": true]
+        ]
+        let workflowData = try PropertyListSerialization.data(fromPropertyList: workflow, format: .binary, options: 0)
+        try workflowData.write(to: workflowURL)
+        try QuickActionMigration.repair(at: workflowURL)
+        let repairedData = try Data(contentsOf: workflowURL)
+        let repaired = try PropertyListSerialization.propertyList(from: repairedData, format: nil) as! [String: Any]
+        let actions = repaired["actions"] as! [[String: Any]]
+        let action = actions[0]["action"] as! [String: Any]
+        let parameters = action["ActionParameters"] as! [String: Any]
+        let script = parameters["COMMAND_STRING"] as! String
+        try expect(!script.contains("open -a"), "migration should remove the explicit reopen")
+        try expect(script.contains("--convert"), "migration must preserve conversion")
+        try expect((repaired["workflowMetaData"] as? [String: Bool])?["preserved"] == true,
+                   "migration must preserve workflow metadata")
+        try QuickActionMigration.repair(at: workflowURL)
+        let repeatedData = try Data(contentsOf: workflowURL)
+        try expect(repeatedData == repairedData, "migration should be idempotent")
+        try QuickActionMigration.repair(at: root.appendingPathComponent("missing.wflow"))
+
+        print("Destination and Quick Action migration tests passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {

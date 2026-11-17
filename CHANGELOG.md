@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.6 - 2026-11-17
+
+- Finder Quick Actions and the Finder service now convert files without opening the Plink popover or taking focus.
+- Automatically repair the reopen command in Quick Actions installed by older versions when Plink launches.
+
 ## v1.0.5 - 2026-09-01
 
 - Changed the default destination so converted JPGs are saved beside their original HEIC or HEIF files.

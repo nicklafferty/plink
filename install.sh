@@ -97,7 +97,6 @@ for file in "$@"; do
   esac
 done
 
-open -a "/Applications/Plink.app" >/dev/null 2>&1 || true
 ]]></string>
 					<key>inputMethod</key>
 					<integer>1</integer>
